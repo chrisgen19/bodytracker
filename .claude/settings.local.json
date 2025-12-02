@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest:*)",
+      "Bash(dir:*)",
+      "Bash(xcopy /E /I /Y bodytracker-temp* bodytracker)",
+      "Bash(robocopy bodytracker-temp bodytracker /E /NFL /NDL /NJH /NJS)",
+      "Bash(npm install:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx prisma init)",
+      "Bash(npx prisma migrate:*)",
+      "Bash(npx prisma generate:*)",
+      "Bash(del \"d:\\proj\\bodytracker\\app\\components\\BodyTrackerDB.tsx\")",
+      "Bash(taskkill:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
