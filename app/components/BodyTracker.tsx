@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   LineChart,
   Line,
@@ -28,7 +28,8 @@ import {
   Flame,
   User as UserIcon,
   Database,
-  LogOut
+  LogOut,
+  Edit
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
@@ -47,6 +48,12 @@ import {
   onSnapshot,
   query,
   serverTimestamp,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  where,
+  orderBy,
+  getDocs,
   type Firestore,
   type Timestamp as FirestoreTimestamp
 } from 'firebase/firestore';
@@ -100,7 +107,13 @@ if (typeof window !== 'undefined' && FIREBASE_ENABLED) {
   try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
-    db = getFirestore(app);
+
+    // Initialize Firestore with modern persistent cache (supports multiple tabs)
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager()
+      })
+    });
   } catch (error) {
     console.warn('Firebase initialization failed:', error);
   }
@@ -844,6 +857,138 @@ const Diary = ({ entries, onDelete, onLoadDemo }: {
   );
 };
 
+const SwipeableEntry = ({ entry, onDelete }: { entry: Entry; onDelete: (id: string) => void }) => {
+  const [swipeX, setSwipeX] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const startX = useRef(0);
+
+  // Touch handlers for mobile
+  const handleTouchStart = (e: React.TouchEvent) => {
+    startX.current = e.touches[0].clientX;
+    setIsDragging(true);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isDragging) return;
+    const currentX = e.touches[0].clientX;
+    const diff = currentX - startX.current;
+    // Only allow left swipe (negative values)
+    if (diff < 0) {
+      setSwipeX(Math.max(diff, -150)); // Max swipe distance
+    }
+  };
+
+  const handleTouchEnd = () => {
+    setIsDragging(false);
+    // Snap to actions if swiped more than 50px, otherwise reset
+    if (swipeX < -50) {
+      setSwipeX(-150);
+    } else {
+      setSwipeX(0);
+    }
+  };
+
+  // Mouse handlers for desktop
+  const handleMouseDown = (e: React.MouseEvent) => {
+    startX.current = e.clientX;
+    setIsDragging(true);
+    e.preventDefault(); // Prevent text selection
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    const currentX = e.clientX;
+    const diff = currentX - startX.current;
+    // Only allow left drag (negative values)
+    if (diff < 0) {
+      setSwipeX(Math.max(diff, -150)); // Max drag distance
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    // Snap to actions if dragged more than 50px, otherwise reset
+    if (swipeX < -50) {
+      setSwipeX(-150);
+    } else {
+      setSwipeX(0);
+    }
+  };
+
+  const handleMouseLeave = () => {
+    if (isDragging) {
+      handleMouseUp();
+    }
+  };
+
+  const handleDelete = () => {
+    onDelete(entry.id);
+    setSwipeX(0);
+  };
+
+  return (
+    <div className="relative overflow-hidden">
+      {/* Action buttons background */}
+      <div className="absolute right-0 top-0 bottom-0 flex items-center gap-2 pr-2">
+        <button
+          onClick={handleDelete}
+          className="bg-red-500 text-white p-3 rounded-xl shadow-lg flex items-center justify-center hover:bg-red-600 transition-colors"
+          style={{ opacity: Math.abs(swipeX) / 150 }}
+        >
+          <Trash2 size={18} />
+        </button>
+      </div>
+
+      {/* Swipeable/Draggable content */}
+      <div
+        className="flex items-start gap-4 bg-white relative z-10 transition-transform cursor-grab active:cursor-grabbing"
+        style={{
+          transform: `translateX(${swipeX}px)`,
+          transition: isDragging ? 'none' : 'transform 0.3s ease-out',
+          userSelect: 'none'
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+      >
+        <div className="mt-0.5 relative z-10 pl-1">
+          {entry.type === 'weight' && <Scale size={18} className="text-blue-500" strokeWidth={2} />}
+          {entry.type === 'food' && <Utensils size={18} className="text-orange-500" strokeWidth={2} />}
+          {entry.type === 'exercise' && <Dumbbell size={18} className="text-purple-500" strokeWidth={2} />}
+        </div>
+
+        <div className="flex-1 min-w-0 py-1">
+          <p className="text-slate-700 font-semibold text-sm leading-snug">
+            {entry.type === 'weight' ? 'Weight check' : entry.name}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2 mt-1">
+            {entry.type === 'food' && (
+              <span className="text-xs font-medium text-orange-600 bg-orange-50 px-2 py-0.5 rounded-md">
+                {entry.value} kcal
+              </span>
+            )}
+            {entry.type === 'exercise' && (
+              <span className="text-xs font-medium text-purple-600 bg-purple-50 px-2 py-0.5 rounded-md">
+                {entry.value} mins
+              </span>
+            )}
+            {entry.details && (
+              <span className="text-xs text-slate-400 truncate max-w-full">
+                {entry.details}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const DayHistoryCard = ({ date, entries, onDelete }: {
   date: string;
   entries: Entry[];
@@ -895,47 +1040,7 @@ const DayHistoryCard = ({ date, entries, onDelete }: {
 
       <div className="space-y-4">
         {entries.map(entry => (
-          <div key={entry.id} className="flex items-start gap-4 group relative pl-1">
-            <div className="mt-0.5 relative z-10">
-              {entry.type === 'weight' && <Scale size={18} className="text-blue-500" strokeWidth={2} />}
-              {entry.type === 'food' && <Utensils size={18} className="text-orange-500" strokeWidth={2} />}
-              {entry.type === 'exercise' && <Dumbbell size={18} className="text-purple-500" strokeWidth={2} />}
-            </div>
-
-            <div className="flex-1 min-w-0">
-               <div className="flex justify-between items-start">
-                  <p className="text-slate-700 font-semibold text-sm leading-snug">
-                    {entry.type === 'weight' ? 'Weight check' : entry.name}
-                  </p>
-
-                  <button
-                    onClick={() => onDelete(entry.id)}
-                    className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all p-1 -mt-1 -mr-2"
-                    title="Delete entry"
-                  >
-                    <Trash2 size={15} />
-                  </button>
-               </div>
-
-               <div className="flex flex-wrap items-center gap-2 mt-1">
-                 {entry.type === 'food' && (
-                    <span className="text-xs font-medium text-orange-600 bg-orange-50 px-2 py-0.5 rounded-md">
-                      {entry.value} kcal
-                    </span>
-                 )}
-                 {entry.type === 'exercise' && (
-                    <span className="text-xs font-medium text-purple-600 bg-purple-50 px-2 py-0.5 rounded-md">
-                      {entry.value} mins
-                    </span>
-                 )}
-                 {entry.details && (
-                   <span className="text-xs text-slate-400 truncate max-w-full">
-                     {entry.details}
-                   </span>
-                 )}
-               </div>
-            </div>
-          </div>
+          <SwipeableEntry key={entry.id} entry={entry} onDelete={onDelete} />
         ))}
       </div>
     </div>
@@ -1018,42 +1123,69 @@ export default function BodyTracker() {
     return () => unsubscribeAuth();
   }, []);
 
-  // Real-time listener for entries from Firebase
+  // Real-time listener for entries from Firebase with optimized caching
   useEffect(() => {
     if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
 
     const entriesRef = collection(db, `users/${user.uid}/entries`);
     const q = query(entriesRef);
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedEntries: Entry[] = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          type: data.type,
-          value: data.value,
-          name: data.name || '',
-          details: data.details || '',
-          date: data.date,
-          timestamp: data.timestamp
-        };
-      });
+    const unsubscribe = onSnapshot(q,
+      {
+        // Include metadata to track cache vs server
+        includeMetadataChanges: true
+      },
+      (snapshot) => {
+        // Check if data is from cache or server
+        const source = snapshot.metadata.fromCache ? 'cache' : 'server';
 
-      // Sort by date descending, then by timestamp
-      fetchedEntries.sort((a, b) => {
-        const dateCompare = b.date.localeCompare(a.date);
-        if (dateCompare !== 0) return dateCompare;
-        const aTime = a.timestamp?.toMillis() || 0;
-        const bTime = b.timestamp?.toMillis() || 0;
-        return bTime - aTime;
-      });
+        // Track what changed (for bandwidth monitoring)
+        const changes = snapshot.docChanges();
+        const changedDocs = changes.length;
 
-      setEntries(fetchedEntries);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching entries:", error);
-      setLoading(false);
-    });
+        // Process data from both cache and server
+        // Skip only intermediate cache updates (not the initial cache load)
+        if (!snapshot.metadata.fromCache || !snapshot.metadata.hasPendingWrites || entries.length === 0) {
+          const fetchedEntries: Entry[] = snapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              type: data.type,
+              value: data.value,
+              name: data.name || '',
+              details: data.details || '',
+              date: data.date,
+              timestamp: data.timestamp
+            };
+          });
+
+          // Sort by date descending, then by timestamp
+          fetchedEntries.sort((a, b) => {
+            const dateCompare = b.date.localeCompare(a.date);
+            if (dateCompare !== 0) return dateCompare;
+            const aTime = a.timestamp?.toMillis() || 0;
+            const bTime = b.timestamp?.toMillis() || 0;
+            return bTime - aTime;
+          });
+
+          setEntries(fetchedEntries);
+
+          // Enhanced logging to show bandwidth optimization
+          if (source === 'server') {
+            console.log(`📊 Data synced from ${source} (${fetchedEntries.length} total, ${changedDocs} changed) - Bandwidth optimized!`);
+          } else {
+            console.log(`📊 Data loaded from ${source} (${fetchedEntries.length} entries) - No bandwidth used!`);
+          }
+        }
+
+        // Always stop loading after first snapshot (cache or server)
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching entries:", error);
+        setLoading(false);
+      }
+    );
 
     return () => unsubscribe();
   }, [user]);
