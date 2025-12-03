@@ -19,7 +19,9 @@
       "Bash(pkill:*)",
       "Bash(kill:*)",
       "Bash(npx next dev:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(copy \"d:\\proj\\bodytracker\\public\\icon-192.svg\" \"d:\\proj\\bodytracker\\public\\icon-192.png\")",
+      "Bash(copy \"d:\\proj\\bodytracker\\public\\icon-512.svg\" \"d:\\proj\\bodytracker\\public\\icon-512.png\")"
     ],
     "deny": [],
     "ask": []

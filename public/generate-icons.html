@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate BodyTracker Icons</title>
+</head>
+<body>
+    <h2>Icon Generator</h2>
+    <p>Right-click on each icon below and "Save image as..."</p>
+
+    <div>
+        <h3>192x192 Icon</h3>
+        <canvas id="canvas192" width="192" height="192"></canvas>
+        <br><button onclick="downloadIcon('canvas192', 'icon-192.png')">Download 192x192</button>
+    </div>
+
+    <div style="margin-top: 20px;">
+        <h3>512x512 Icon</h3>
+        <canvas id="canvas512" width="512" height="512"></canvas>
+        <br><button onclick="downloadIcon('canvas512', 'icon-512.png')">Download 512x512</button>
+    </div>
+
+    <script>
+        function drawIcon(canvas) {
+            const ctx = canvas.getContext('2d');
+            const size = canvas.width;
+
+            // Background gradient
+            const gradient = ctx.createLinearGradient(0, 0, size, size);
+            gradient.addColorStop(0, '#059669');
+            gradient.addColorStop(1, '#14b8a6');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, size, size);
+
+            // Draw scale icon (simplified)
+            ctx.strokeStyle = 'white';
+            ctx.fillStyle = 'white';
+            ctx.lineWidth = size * 0.04;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // Scale platform
+            const centerX = size / 2;
+            const centerY = size / 2;
+            const scaleWidth = size * 0.6;
+            const scaleHeight = size * 0.08;
+
+            ctx.fillRect(centerX - scaleWidth/2, centerY, scaleWidth, scaleHeight);
+
+            // Scale indicator
+            ctx.beginPath();
+            ctx.arc(centerX, centerY - size * 0.15, size * 0.15, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Text
+            ctx.font = `bold ${size * 0.12}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#059669';
+            ctx.fillText('BT', centerX, centerY - size * 0.15);
+        }
+
+        function downloadIcon(canvasId, filename) {
+            const canvas = document.getElementById(canvasId);
+            const link = document.createElement('a');
+            link.download = filename;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+
+        // Generate icons on load
+        window.onload = function() {
+            drawIcon(document.getElementById('canvas192'));
+            drawIcon(document.getElementById('canvas512'));
+        };
+    </script>
+</body>
+</html>

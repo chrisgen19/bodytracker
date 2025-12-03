@@ -1,0 +1,17 @@
+<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#059669;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#14b8a6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#grad)" rx="102"/>
+  <g transform="translate(256, 256)">
+    <!-- Scale platform -->
+    <rect x="-153.6" y="0" width="307.2" height="40.96" fill="white" rx="10.24"/>
+    <!-- Scale indicator circle -->
+    <circle cx="0" cy="-76.8" r="76.8" fill="white"/>
+    <!-- BT text -->
+    <text x="0" y="-66" font-family="Arial, sans-serif" font-size="61" font-weight="bold" fill="#059669" text-anchor="middle" dominant-baseline="middle">BT</text>
+  </g>
+</svg>
