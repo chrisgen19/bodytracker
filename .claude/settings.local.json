@@ -12,7 +12,13 @@
       "Bash(npx prisma migrate:*)",
       "Bash(npx prisma generate:*)",
       "Bash(del \"d:\\proj\\bodytracker\\app\\components\\BodyTrackerDB.tsx\")",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(del \"d:\\proj\\bodytracker\\app\\contexts\\AuthContext.tsx\")",
+      "Bash(cat:*)",
+      "Bash(pkill:*)",
+      "Bash(kill:*)",
+      "Bash(npx next dev:*)"
     ],
     "deny": [],
     "ask": []

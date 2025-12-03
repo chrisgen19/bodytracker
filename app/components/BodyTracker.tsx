@@ -27,14 +27,14 @@ import {
   Sparkles,
   Flame,
   User as UserIcon,
-  Database
+  Database,
+  LogOut
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
-  signInAnonymously,
   onAuthStateChanged,
-  signInWithCustomToken,
+  signOut,
   type Auth,
   type User
 } from 'firebase/auth';
@@ -997,79 +997,130 @@ export default function BodyTracker() {
   const [modalType, setModalType] = useState<'weight' | 'food' | 'exercise'>('weight');
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
 
-  // Load entries from API
-  const fetchEntries = async () => {
-    try {
-      const response = await fetch('/api/entries');
-      if (response.ok) {
-        const data = await response.json();
-        setEntries(data);
-      }
-    } catch (error) {
-      console.error('Error fetching entries:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Firebase authentication and data loading
   useEffect(() => {
-    setUser({ uid: 'db-user' } as User); // Mock user for DB mode
-    fetchEntries();
+    if (!FIREBASE_ENABLED || typeof window === 'undefined') {
+      setLoading(false);
+      return;
+    }
+
+    // Listen to auth state
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+
+      // Redirect to login if not authenticated
+      if (!currentUser && typeof window !== 'undefined') {
+        window.location.href = '/login';
+      }
+    });
+
+    return () => unsubscribeAuth();
   }, []);
 
-  const handleAddEntry = async (entryData: Omit<Entry, 'id' | 'timestamp'>) => {
-    if (!user || typeof window === 'undefined') return;
+  // Real-time listener for entries from Firebase
+  useEffect(() => {
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
 
-    try {
-      const response = await fetch('/api/entries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(entryData)
+    const entriesRef = collection(db, `users/${user.uid}/entries`);
+    const q = query(entriesRef);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedEntries: Entry[] = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          type: data.type,
+          value: data.value,
+          name: data.name || '',
+          details: data.details || '',
+          date: data.date,
+          timestamp: data.timestamp
+        };
       });
 
-      if (response.ok) {
-        fetchEntries(); // Reload entries
-      }
+      // Sort by date descending, then by timestamp
+      fetchedEntries.sort((a, b) => {
+        const dateCompare = b.date.localeCompare(a.date);
+        if (dateCompare !== 0) return dateCompare;
+        const aTime = a.timestamp?.toMillis() || 0;
+        const bTime = b.timestamp?.toMillis() || 0;
+        return bTime - aTime;
+      });
+
+      setEntries(fetchedEntries);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching entries:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleAddEntry = async (entryData: Omit<Entry, 'id' | 'timestamp'>) => {
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+
+    try {
+      const entriesRef = collection(db, `users/${user.uid}/entries`);
+      await addDoc(entriesRef, {
+        ...entryData,
+        timestamp: serverTimestamp()
+      });
     } catch (error) {
       console.error("Error adding entry:", error);
     }
   };
 
   const handleDeleteEntry = async (id: string) => {
-    if (!user || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
 
     try {
-      const response = await fetch(`/api/entries/${id}`, {
-        method: 'DELETE'
-      });
-
-      if (response.ok) {
-        fetchEntries(); // Reload entries
-      }
+      const entryRef = doc(db, `users/${user.uid}/entries`, id);
+      await deleteDoc(entryRef);
     } catch (error) {
       console.error("Error deleting entry:", error);
     }
   };
 
   const generateMockData = async () => {
-    if (!user || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
 
-    try {
-      const response = await fetch('/api/entries/demo', {
-        method: 'POST'
+    const mockEntries = [
+      { type: 'weight', value: 75.5, name: '', date: '2024-11-15' },
+      { type: 'food', value: 450, name: 'Breakfast Bowl', date: '2024-11-15' },
+      { type: 'exercise', value: 30, name: 'Morning Run', date: '2024-11-15' },
+      { type: 'weight', value: 75.2, name: '', date: '2024-11-20' },
+      { type: 'food', value: 600, name: 'Lunch Salad', date: '2024-11-20' },
+      { type: 'exercise', value: 45, name: 'Gym Session', date: '2024-11-20' },
+      { type: 'weight', value: 74.8, name: '', date: '2024-11-25' },
+      { type: 'food', value: 500, name: 'Grilled Chicken', date: '2024-11-25' },
+      { type: 'exercise', value: 60, name: 'Cycling', date: '2024-11-25' },
+    ];
+
+    const entriesRef = collection(db, `users/${user.uid}/entries`);
+    for (const entry of mockEntries) {
+      await addDoc(entriesRef, {
+        ...entry,
+        details: '',
+        timestamp: serverTimestamp()
       });
-
-      if (response.ok) {
-        fetchEntries(); // Reload entries
-      }
-    } catch (error) {
-      console.error("Error generating mock data:", error);
     }
   };
 
 
   const openAddModal = () => {
     setIsModalOpen(true);
+  };
+
+  const handleLogout = async () => {
+    if (!FIREBASE_ENABLED || typeof window === 'undefined') return;
+    try {
+      await signOut(auth);
+      window.location.href = '/login';
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
   if (loading) {
@@ -1090,18 +1141,23 @@ export default function BodyTracker() {
           </h1>
           <p className="text-xs text-slate-400">Track, Analyze, Improve</p>
         </div>
-        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
-           <UserIcon size={20} />
-        </div>
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 transition-colors text-sm font-medium"
+        >
+          <UserIcon size={16} />
+          <span className="hidden sm:inline">{user?.email?.split('@')[0]}</span>
+          <LogOut size={16} />
+        </button>
       </div>
 
       <main className="max-w-md mx-auto p-4 pt-2">
         <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 mb-4 flex items-start gap-3">
-          <Database className="text-emerald-600 mt-0.5 flex-shrink-0" size={20} />
+          <Flame className="text-emerald-600 mt-0.5 flex-shrink-0" size={20} />
           <div>
-            <p className="text-sm font-semibold text-emerald-900 mb-1">PostgreSQL Database</p>
+            <p className="text-sm font-semibold text-emerald-900 mb-1">Secure Firebase Authentication</p>
             <p className="text-xs text-emerald-700 leading-relaxed">
-              Your data is securely stored in a PostgreSQL database and synced in real-time.
+              Your data is protected with Firebase email/password authentication and synced in real-time across all devices.
             </p>
           </div>
         </div>
