@@ -54,6 +54,7 @@ import {
   where,
   orderBy,
   getDocs,
+  updateDoc,
   type Firestore,
   type Timestamp as FirestoreTimestamp
 } from 'firebase/firestore';
@@ -187,18 +188,40 @@ const BottomNav = ({ activeTab, setActiveTab, onAdd }: {
 );
 
 // 2. Add Entry Modal
-const AddModal = ({ isOpen, onClose, onSave, type, setType }: {
+const AddModal = ({ isOpen, onClose, onSave, type, setType, editEntry }: {
   isOpen: boolean;
   onClose: () => void;
   onSave: (data: Omit<Entry, 'id' | 'timestamp'>) => void;
   type: 'weight' | 'food' | 'exercise';
   setType: (type: 'weight' | 'food' | 'exercise') => void;
+  editEntry?: Entry | null;
 }) => {
   const [value, setValue] = useState('');
   const [name, setName] = useState('');
   const [details, setDetails] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [isEstimating, setIsEstimating] = useState(false);
+
+  const resetForm = () => {
+    setValue('');
+    setName('');
+    setDetails('');
+    setDate(new Date().toISOString().split('T')[0]);
+    setIsEstimating(false);
+  };
+
+  // Pre-fill form when editing
+  useEffect(() => {
+    if (editEntry) {
+      setValue(editEntry.value.toString());
+      setName(editEntry.name || '');
+      setDetails(editEntry.details || '');
+      setDate(editEntry.date);
+      setType(editEntry.type);
+    } else {
+      resetForm();
+    }
+  }, [editEntry, isOpen]);
 
   if (!isOpen) return null;
 
@@ -207,13 +230,6 @@ const AddModal = ({ isOpen, onClose, onSave, type, setType }: {
     onSave({ type, value: parseFloat(value) || 0, name, details: details || '', date });
     resetForm();
     onClose();
-  };
-
-  const resetForm = () => {
-    setValue('');
-    setName('');
-    setDetails('');
-    setIsEstimating(false);
   };
 
   const handleEstimateCalories = async () => {
@@ -242,7 +258,7 @@ const AddModal = ({ isOpen, onClose, onSave, type, setType }: {
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl p-6 animate-slide-up shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold text-slate-800">New Entry</h2>
+          <h2 className="text-xl font-bold text-slate-800">{editEntry ? 'Edit Entry' : 'New Entry'}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600">Close</button>
         </div>
 
@@ -355,7 +371,7 @@ const AddModal = ({ isOpen, onClose, onSave, type, setType }: {
             type="submit"
             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-4 rounded-xl shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] mt-4"
           >
-            Save Entry
+            {editEntry ? 'Update Entry' : 'Save Entry'}
           </button>
         </form>
       </div>
@@ -803,10 +819,11 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
 };
 
 // 5. Diary View (History Page)
-const Diary = ({ entries, onDelete, onLoadDemo }: {
+const Diary = ({ entries, onDelete, onLoadDemo, onEdit }: {
   entries: Entry[];
   onDelete: (id: string) => void;
   onLoadDemo: () => void;
+  onEdit?: (entry: Entry) => void;
 }) => {
   const groupedEntries = useMemo(() => {
     const groups: Record<string, Entry[]> = {};
@@ -849,6 +866,7 @@ const Diary = ({ entries, onDelete, onLoadDemo }: {
               date={group.date}
               entries={group.items}
               onDelete={onDelete}
+              onEdit={onEdit}
             />
           ))
         )}
@@ -857,10 +875,18 @@ const Diary = ({ entries, onDelete, onLoadDemo }: {
   );
 };
 
-const SwipeableEntry = ({ entry, onDelete }: { entry: Entry; onDelete: (id: string) => void }) => {
+const SwipeableEntry = ({ entry, onDelete, onEdit }: {
+  entry: Entry;
+  onDelete: (id: string) => void;
+  onEdit?: (entry: Entry) => void;
+}) => {
   const [swipeX, setSwipeX] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const startX = useRef(0);
+
+  const EDIT_THRESHOLD = -80;  // Mid swipe shows edit
+  const DELETE_THRESHOLD = -160; // Further swipe shows delete
+  const MAX_SWIPE = -200; // Maximum swipe distance
 
   // Touch handlers for mobile
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -874,16 +900,21 @@ const SwipeableEntry = ({ entry, onDelete }: { entry: Entry; onDelete: (id: stri
     const diff = currentX - startX.current;
     // Only allow left swipe (negative values)
     if (diff < 0) {
-      setSwipeX(Math.max(diff, -150)); // Max swipe distance
+      setSwipeX(Math.max(diff, MAX_SWIPE));
     }
   };
 
   const handleTouchEnd = () => {
     setIsDragging(false);
-    // Snap to actions if swiped more than 50px, otherwise reset
-    if (swipeX < -50) {
-      setSwipeX(-150);
+    // Trigger action based on swipe distance
+    if (swipeX <= DELETE_THRESHOLD) {
+      // Full swipe - delete
+      handleDelete();
+    } else if (swipeX <= EDIT_THRESHOLD) {
+      // Mid swipe - edit
+      handleEdit();
     } else {
+      // Light swipe - reset
       setSwipeX(0);
     }
   };
@@ -901,16 +932,21 @@ const SwipeableEntry = ({ entry, onDelete }: { entry: Entry; onDelete: (id: stri
     const diff = currentX - startX.current;
     // Only allow left drag (negative values)
     if (diff < 0) {
-      setSwipeX(Math.max(diff, -150)); // Max drag distance
+      setSwipeX(Math.max(diff, MAX_SWIPE));
     }
   };
 
   const handleMouseUp = () => {
     setIsDragging(false);
-    // Snap to actions if dragged more than 50px, otherwise reset
-    if (swipeX < -50) {
-      setSwipeX(-150);
+    // Trigger action based on drag distance
+    if (swipeX <= DELETE_THRESHOLD) {
+      // Full drag - delete
+      handleDelete();
+    } else if (swipeX <= EDIT_THRESHOLD) {
+      // Mid drag - edit
+      handleEdit();
     } else {
+      // Light drag - reset
       setSwipeX(0);
     }
   };
@@ -926,17 +962,39 @@ const SwipeableEntry = ({ entry, onDelete }: { entry: Entry; onDelete: (id: stri
     setSwipeX(0);
   };
 
+  const handleEdit = () => {
+    if (onEdit) {
+      onEdit(entry);
+      setSwipeX(0);
+    }
+  };
+
   return (
     <div className="relative overflow-hidden">
-      {/* Action buttons background */}
-      <div className="absolute right-0 top-0 bottom-0 flex items-center gap-2 pr-2">
-        <button
-          onClick={handleDelete}
-          className="bg-red-500 text-white p-3 rounded-xl shadow-lg flex items-center justify-center hover:bg-red-600 transition-colors"
-          style={{ opacity: Math.abs(swipeX) / 150 }}
+      {/* Action indicators background - stacked in order */}
+      <div className="absolute right-0 top-0 bottom-0 flex items-center gap-2 pr-2 pointer-events-none">
+        {/* Edit indicator - appears first at mid swipe */}
+        {onEdit && (
+          <div
+            className="bg-blue-500 text-white p-3 rounded-xl shadow-lg flex items-center justify-center transition-all"
+            style={{
+              opacity: swipeX <= EDIT_THRESHOLD ? 1 : Math.max(0, Math.abs(swipeX) / Math.abs(EDIT_THRESHOLD)),
+              transform: swipeX <= DELETE_THRESHOLD ? 'translateX(0)' : 'translateX(20px)'
+            }}
+          >
+            <Edit size={18} />
+          </div>
+        )}
+        {/* Delete indicator - appears at further swipe */}
+        <div
+          className="bg-red-500 text-white p-3 rounded-xl shadow-lg flex items-center justify-center transition-all"
+          style={{
+            opacity: swipeX <= DELETE_THRESHOLD ? 1 : 0,
+            transform: swipeX <= DELETE_THRESHOLD ? 'translateX(0)' : 'translateX(40px)'
+          }}
         >
           <Trash2 size={18} />
-        </button>
+        </div>
       </div>
 
       {/* Swipeable/Draggable content */}
@@ -989,10 +1047,11 @@ const SwipeableEntry = ({ entry, onDelete }: { entry: Entry; onDelete: (id: stri
   );
 };
 
-const DayHistoryCard = ({ date, entries, onDelete }: {
+const DayHistoryCard = ({ date, entries, onDelete, onEdit }: {
   date: string;
   entries: Entry[];
   onDelete: (id: string) => void;
+  onEdit?: (entry: Entry) => void;
 }) => {
   const weightEntry = entries.find(e => e.type === 'weight');
   const displayWeight = weightEntry ? weightEntry.value : null;
@@ -1040,7 +1099,7 @@ const DayHistoryCard = ({ date, entries, onDelete }: {
 
       <div className="space-y-4">
         {entries.map(entry => (
-          <SwipeableEntry key={entry.id} entry={entry} onDelete={onDelete} />
+          <SwipeableEntry key={entry.id} entry={entry} onDelete={onDelete} onEdit={onEdit} />
         ))}
       </div>
     </div>
@@ -1101,6 +1160,7 @@ export default function BodyTracker() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'weight' | 'food' | 'exercise'>('weight');
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
 
   // Firebase authentication and data loading
   useEffect(() => {
@@ -1194,13 +1254,24 @@ export default function BodyTracker() {
     if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
 
     try {
-      const entriesRef = collection(db, `users/${user.uid}/entries`);
-      await addDoc(entriesRef, {
-        ...entryData,
-        timestamp: serverTimestamp()
-      });
+      if (editingEntry) {
+        // Update existing entry
+        const entryRef = doc(db, `users/${user.uid}/entries`, editingEntry.id);
+        await updateDoc(entryRef, {
+          ...entryData,
+          timestamp: serverTimestamp()
+        });
+        setEditingEntry(null);
+      } else {
+        // Add new entry
+        const entriesRef = collection(db, `users/${user.uid}/entries`);
+        await addDoc(entriesRef, {
+          ...entryData,
+          timestamp: serverTimestamp()
+        });
+      }
     } catch (error) {
-      console.error("Error adding entry:", error);
+      console.error("Error saving entry:", error);
     }
   };
 
@@ -1213,6 +1284,12 @@ export default function BodyTracker() {
     } catch (error) {
       console.error("Error deleting entry:", error);
     }
+  };
+
+  const handleEditEntry = (entry: Entry) => {
+    setEditingEntry(entry);
+    setModalType(entry.type);
+    setIsModalOpen(true);
   };
 
   const generateMockData = async () => {
@@ -1242,7 +1319,13 @@ export default function BodyTracker() {
 
 
   const openAddModal = () => {
+    setEditingEntry(null);
     setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setEditingEntry(null);
   };
 
   const handleLogout = async () => {
@@ -1297,16 +1380,17 @@ export default function BodyTracker() {
         {activeTab === 'dashboard' ? (
           <Dashboard entries={entries} onLoadDemo={generateMockData} onShowAI={() => setIsAIModalOpen(true)} />
         ) : (
-          <Diary entries={entries} onDelete={handleDeleteEntry} onLoadDemo={generateMockData} />
+          <Diary entries={entries} onDelete={handleDeleteEntry} onLoadDemo={generateMockData} onEdit={handleEditEntry} />
         )}
       </main>
 
       <AddModal
         isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
+        onClose={closeModal}
         onSave={handleAddEntry}
         type={modalType}
         setType={setModalType}
+        editEntry={editingEntry}
       />
 
       <AIInsightsModal
