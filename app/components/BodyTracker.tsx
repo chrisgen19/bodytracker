@@ -1161,6 +1161,16 @@ export default function BodyTracker() {
   const [modalType, setModalType] = useState<'weight' | 'food' | 'exercise'>('weight');
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
+  const [deletedEntry, setDeletedEntry] = useState<{entry: Entry, timeoutId: NodeJS.Timeout} | null>(null);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (deletedEntry) {
+        clearTimeout(deletedEntry.timeoutId);
+      }
+    };
+  }, [deletedEntry]);
 
   // Firebase authentication and data loading
   useEffect(() => {
@@ -1278,11 +1288,47 @@ export default function BodyTracker() {
   const handleDeleteEntry = async (id: string) => {
     if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
 
+    // Find the entry to delete
+    const entryToDelete = entries.find(e => e.id === id);
+    if (!entryToDelete) return;
+
     try {
+      // Delete from Firebase
       const entryRef = doc(db, `users/${user.uid}/entries`, id);
       await deleteDoc(entryRef);
+
+      // Show undo notification
+      const timeoutId = setTimeout(() => {
+        setDeletedEntry(null);
+      }, 5000); // 5 seconds to undo
+
+      setDeletedEntry({ entry: entryToDelete, timeoutId });
     } catch (error) {
       console.error("Error deleting entry:", error);
+    }
+  };
+
+  const handleUndoDelete = async () => {
+    if (!deletedEntry || !user || !FIREBASE_ENABLED) return;
+
+    // Clear the timeout
+    clearTimeout(deletedEntry.timeoutId);
+
+    try {
+      // Re-add the entry to Firebase
+      const entriesRef = collection(db, `users/${user.uid}/entries`);
+      await addDoc(entriesRef, {
+        type: deletedEntry.entry.type,
+        value: deletedEntry.entry.value,
+        name: deletedEntry.entry.name,
+        details: deletedEntry.entry.details || '',
+        date: deletedEntry.entry.date,
+        timestamp: serverTimestamp()
+      });
+
+      setDeletedEntry(null);
+    } catch (error) {
+      console.error("Error restoring entry:", error);
     }
   };
 
@@ -1404,6 +1450,22 @@ export default function BodyTracker() {
         setActiveTab={setActiveTab}
         onAdd={openAddModal}
       />
+
+      {/* Undo Delete Notification */}
+      {deletedEntry && (
+        <div className="fixed bottom-20 left-4 right-4 bg-slate-800 text-white px-4 py-3 rounded-2xl shadow-2xl z-[70] flex items-center justify-between animate-slide-up">
+          <div className="flex items-center gap-2">
+            <Trash2 size={16} />
+            <span className="text-sm font-medium">Entry deleted</span>
+          </div>
+          <button
+            onClick={handleUndoDelete}
+            className="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors text-sm"
+          >
+            Undo
+          </button>
+        </div>
+      )}
     </div>
   );
 }
