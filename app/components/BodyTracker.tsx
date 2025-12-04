@@ -475,7 +475,7 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
   onShowAI: () => void;
 }) => {
   const [activeMetrics, setActiveMetrics] = useState(['weight']);
-  const [timeView, setTimeView] = useState('1M');
+  const [timeView, setTimeView] = useState('1W');
   const [viewDate, setViewDate] = useState(new Date());
   const [weekPage, setWeekPage] = useState(0); // For 1W view pagination
 
