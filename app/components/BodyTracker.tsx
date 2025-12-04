@@ -1329,8 +1329,12 @@ export default function BodyTracker() {
 
   // Real-time listener for entries from Firebase with optimized caching
   useEffect(() => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) {
+      console.log('❌ Firebase not ready:', { user: !!user, FIREBASE_ENABLED, window: typeof window !== 'undefined', db: !!db });
+      return;
+    }
 
+    console.log('✅ Setting up Firebase listener for user:', user.uid);
     const entriesRef = collection(db, `users/${user.uid}/entries`);
     const q = query(entriesRef);
 
@@ -1342,6 +1346,7 @@ export default function BodyTracker() {
       (snapshot) => {
         // Check if data is from cache or server
         const source = snapshot.metadata.fromCache ? 'cache' : 'server';
+        console.log(`📡 Snapshot received from ${source}, docs: ${snapshot.docs.length}`);
 
         // Track what changed (for bandwidth monitoring)
         const changes = snapshot.docChanges();
