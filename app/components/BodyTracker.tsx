@@ -1331,8 +1331,47 @@ export default function BodyTracker() {
     const entriesRef = collection(db, `users/${user.uid}/entries`);
     const q = query(entriesRef);
 
+    // Force initial fetch from server on login
+    let isFirstLoad = true;
+    getDocs(q).then((querySnapshot) => {
+      console.log('🚀 Initial server fetch completed:', querySnapshot.docs.length, 'docs');
+      const fetchedEntries: Entry[] = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          type: data.type,
+          value: data.value,
+          name: data.name || '',
+          details: data.details || '',
+          date: data.date,
+          timestamp: data.timestamp
+        };
+      });
+
+      fetchedEntries.sort((a, b) => {
+        const dateCompare = b.date.localeCompare(a.date);
+        if (dateCompare !== 0) return dateCompare;
+        const aTime = a.timestamp?.toMillis() || 0;
+        const bTime = b.timestamp?.toMillis() || 0;
+        return bTime - aTime;
+      });
+
+      setEntries(fetchedEntries);
+      setLoading(false);
+      isFirstLoad = false;
+    }).catch((error) => {
+      console.error('❌ Initial fetch failed:', error);
+      setLoading(false);
+    });
+
     const unsubscribe = onSnapshot(q,
       (snapshot) => {
+        // Skip the first snapshot if we already loaded from server
+        if (isFirstLoad) {
+          isFirstLoad = false;
+          return;
+        }
+
         // Check if data is from cache or server
         const source = snapshot.metadata.fromCache ? 'cache' : 'server';
         console.log(`📡 Snapshot received from ${source}, docs: ${snapshot.docs.length}`);
