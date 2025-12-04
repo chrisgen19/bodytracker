@@ -161,7 +161,7 @@ const BottomNav = ({ activeTab, setActiveTab, onAdd }: {
   setActiveTab: (tab: string) => void;
   onAdd: () => void;
 }) => (
-  <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-6 py-3 flex justify-between items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+  <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-6 py-3 flex justify-evenly items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
     <button
       onClick={() => setActiveTab('dashboard')}
       className={`flex flex-col items-center gap-1 ${activeTab === 'dashboard' ? 'text-emerald-600' : 'text-slate-400'}`}
