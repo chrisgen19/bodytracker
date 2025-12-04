@@ -1220,8 +1220,10 @@ export default function BodyTracker() {
         const changedDocs = changes.length;
 
         // Process data from both cache and server
-        // Skip only intermediate cache updates (not the initial cache load)
-        if (!snapshot.metadata.fromCache || !snapshot.metadata.hasPendingWrites || entries.length === 0) {
+        // Skip only if it's from cache AND has pending writes (optimistic update in progress)
+        const shouldUpdate = !snapshot.metadata.fromCache || !snapshot.metadata.hasPendingWrites;
+
+        if (shouldUpdate) {
           const fetchedEntries: Entry[] = snapshot.docs.map(doc => {
             const data = doc.data();
             return {
