@@ -31,7 +31,7 @@ import {
   LogOut,
   Edit
 } from 'lucide-react';
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps } from 'firebase/app';
 import {
   getAuth,
   onAuthStateChanged,
@@ -107,13 +107,25 @@ const FIREBASE_ENABLED = isFirebaseConfigured();
 
 if (typeof window !== 'undefined' && FIREBASE_ENABLED) {
   try {
-    app = initializeApp(firebaseConfig);
+    // Check if Firebase is already initialized
+    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+    console.log('🔥 Firebase app initialized:', app.name);
+
     auth = getAuth(app);
+    console.log('🔐 Firebase Auth initialized:', !!auth);
 
     // Initialize Firestore with memory-only cache for more reliable syncing on mobile
     db = getFirestore(app);
+    console.log('💾 Firestore initialized:', !!db);
   } catch (error) {
-    console.warn('Firebase initialization failed:', error);
+    console.error('❌ Firebase initialization failed:', error);
+    // Try to recover by reinitializing
+    if (error instanceof Error && error.message.includes('duplicate-app')) {
+      app = getApps()[0];
+      auth = getAuth(app);
+      db = getFirestore(app);
+      console.log('✅ Recovered from duplicate-app error');
+    }
   }
 }
 
