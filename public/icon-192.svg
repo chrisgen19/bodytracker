@@ -6,12 +6,16 @@
     </linearGradient>
   </defs>
   <rect width="192" height="192" fill="url(#grad)" rx="38"/>
-  <g transform="translate(96, 96)">
-    <!-- Scale platform -->
-    <rect x="-57.6" y="0" width="115.2" height="15.36" fill="white" rx="3.84"/>
-    <!-- Scale indicator circle -->
-    <circle cx="0" cy="-28.8" r="28.8" fill="white"/>
-    <!-- BT text -->
-    <text x="0" y="-25" font-family="Arial, sans-serif" font-size="23" font-weight="bold" fill="#059669" text-anchor="middle" dominant-baseline="middle">BT</text>
+  <g transform="translate(96, 96) scale(6.4)" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- Central pole -->
+    <path d="M 0 -6 v 14"/>
+    <!-- Top bar -->
+    <path d="M -8 -5.5 h 1 a 17 17 0 0 0 7 -1.5 a 17 17 0 0 0 7 1.5 h 1"/>
+    <!-- Left scale pan -->
+    <path d="M -8 -5 l 2 6 a 5 5 0 0 1 -4 0 z"/>
+    <!-- Right scale pan -->
+    <path d="M 8 -5 l 2 6 a 5 5 0 0 1 -4 0 z"/>
+    <!-- Base -->
+    <path d="M -4 8 h 8"/>
   </g>
 </svg>
