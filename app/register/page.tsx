@@ -7,6 +7,15 @@ import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
 import { Mail, Lock, Loader, UserPlus, LogIn } from 'lucide-react';
 import Link from 'next/link';
 
+// Check if Firebase is configured
+const isFirebaseConfigured = () => {
+  return !!(
+    process.env.NEXT_PUBLIC_FIREBASE_API_KEY &&
+    process.env.NEXT_PUBLIC_FIREBASE_API_KEY !== "YOUR_API_KEY" &&
+    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
+  );
+};
+
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "",
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "",
@@ -17,10 +26,14 @@ const firebaseConfig = {
 };
 
 let auth: any;
-if (typeof window !== 'undefined') {
-  // Check if Firebase is already initialized
-  const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-  auth = getAuth(app);
+if (typeof window !== 'undefined' && isFirebaseConfigured()) {
+  try {
+    // Check if Firebase is already initialized
+    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+    auth = getAuth(app);
+  } catch (error) {
+    console.error('Firebase initialization error:', error);
+  }
 }
 
 export default function RegisterPage() {
