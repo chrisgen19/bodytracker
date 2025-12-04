@@ -832,7 +832,7 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
           </div>
         </div>
 
-        <div className="h-64 w-full transition-opacity duration-300">
+        <div className="h-64 w-full transition-opacity duration-300 select-none">
           {chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
