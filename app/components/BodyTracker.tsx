@@ -96,12 +96,13 @@ const firebaseConfig = {
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "",
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "",
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || ""
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "",
+  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || ""
 };
 
 let app: any;
-let auth: Auth;
-let db: Firestore;
+let auth: Auth | null = null;
+let db: Firestore | null = null;
 const FIREBASE_ENABLED = isFirebaseConfigured();
 
 if (typeof window !== 'undefined' && FIREBASE_ENABLED) {
@@ -188,13 +189,14 @@ const BottomNav = ({ activeTab, setActiveTab, onAdd }: {
 );
 
 // 2. Add Entry Modal
-const AddModal = ({ isOpen, onClose, onSave, type, setType, editEntry }: {
+const AddModal = ({ isOpen, onClose, onSave, type, setType, editEntry, isSaving }: {
   isOpen: boolean;
   onClose: () => void;
   onSave: (data: Omit<Entry, 'id' | 'timestamp'>) => void;
   type: 'weight' | 'food' | 'exercise';
   setType: (type: 'weight' | 'food' | 'exercise') => void;
   editEntry?: Entry | null;
+  isSaving?: boolean;
 }) => {
   const [value, setValue] = useState('');
   const [name, setName] = useState('');
@@ -369,9 +371,11 @@ const AddModal = ({ isOpen, onClose, onSave, type, setType, editEntry }: {
 
           <button
             type="submit"
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-4 rounded-xl shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] mt-4"
+            disabled={isSaving}
+            className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-xl shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] mt-4 flex items-center justify-center gap-2"
           >
-            {editEntry ? 'Update Entry' : 'Save Entry'}
+            {isSaving && <Loader size={16} className="animate-spin" />}
+            {isSaving ? 'Saving...' : (editEntry ? 'Update Entry' : 'Save Entry')}
           </button>
         </form>
       </div>
@@ -1162,6 +1166,8 @@ export default function BodyTracker() {
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [deletedEntry, setDeletedEntry] = useState<{entry: Entry, timeoutId: NodeJS.Timeout} | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -1174,7 +1180,7 @@ export default function BodyTracker() {
 
   // Firebase authentication and data loading
   useEffect(() => {
-    if (!FIREBASE_ENABLED || typeof window === 'undefined') {
+    if (!FIREBASE_ENABLED || typeof window === 'undefined' || !auth) {
       setLoading(false);
       return;
     }
@@ -1195,7 +1201,7 @@ export default function BodyTracker() {
 
   // Real-time listener for entries from Firebase with optimized caching
   useEffect(() => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
 
     const entriesRef = collection(db, `users/${user.uid}/entries`);
     const q = query(entriesRef);
@@ -1261,7 +1267,10 @@ export default function BodyTracker() {
   }, [user]);
 
   const handleAddEntry = async (entryData: Omit<Entry, 'id' | 'timestamp'>) => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
+
+    setIsSaving(true);
+    setError(null);
 
     try {
       if (editingEntry) {
@@ -1282,15 +1291,20 @@ export default function BodyTracker() {
       }
     } catch (error) {
       console.error("Error saving entry:", error);
+      setError("Failed to save entry. Please check your connection and try again.");
+    } finally {
+      setIsSaving(false);
     }
   };
 
   const handleDeleteEntry = async (id: string) => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
 
     // Find the entry to delete
     const entryToDelete = entries.find(e => e.id === id);
     if (!entryToDelete) return;
+
+    setError(null);
 
     try {
       // Delete from Firebase
@@ -1305,14 +1319,16 @@ export default function BodyTracker() {
       setDeletedEntry({ entry: entryToDelete, timeoutId });
     } catch (error) {
       console.error("Error deleting entry:", error);
+      setError("Failed to delete entry. Please try again.");
     }
   };
 
   const handleUndoDelete = async () => {
-    if (!deletedEntry || !user || !FIREBASE_ENABLED) return;
+    if (!deletedEntry || !user || !FIREBASE_ENABLED || !db) return;
 
     // Clear the timeout
     clearTimeout(deletedEntry.timeoutId);
+    setError(null);
 
     try {
       // Re-add the entry to Firebase
@@ -1329,6 +1345,8 @@ export default function BodyTracker() {
       setDeletedEntry(null);
     } catch (error) {
       console.error("Error restoring entry:", error);
+      setError("Failed to restore entry. Please try again.");
+      setDeletedEntry(null);
     }
   };
 
@@ -1339,18 +1357,28 @@ export default function BodyTracker() {
   };
 
   const generateMockData = async () => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
+
+    // Generate relative dates (today, 5 days ago, 10 days ago)
+    const today = new Date();
+    const date1 = new Date(today);
+    date1.setDate(today.getDate() - 10);
+    const date2 = new Date(today);
+    date2.setDate(today.getDate() - 5);
+    const date3 = today;
+
+    const formatDate = (date: Date) => date.toISOString().split('T')[0];
 
     const mockEntries = [
-      { type: 'weight', value: 75.5, name: '', date: '2024-11-15' },
-      { type: 'food', value: 450, name: 'Breakfast Bowl', date: '2024-11-15' },
-      { type: 'exercise', value: 30, name: 'Morning Run', date: '2024-11-15' },
-      { type: 'weight', value: 75.2, name: '', date: '2024-11-20' },
-      { type: 'food', value: 600, name: 'Lunch Salad', date: '2024-11-20' },
-      { type: 'exercise', value: 45, name: 'Gym Session', date: '2024-11-20' },
-      { type: 'weight', value: 74.8, name: '', date: '2024-11-25' },
-      { type: 'food', value: 500, name: 'Grilled Chicken', date: '2024-11-25' },
-      { type: 'exercise', value: 60, name: 'Cycling', date: '2024-11-25' },
+      { type: 'weight', value: 75.5, name: '', date: formatDate(date1) },
+      { type: 'food', value: 450, name: 'Breakfast Bowl', date: formatDate(date1) },
+      { type: 'exercise', value: 30, name: 'Morning Run', date: formatDate(date1) },
+      { type: 'weight', value: 75.2, name: '', date: formatDate(date2) },
+      { type: 'food', value: 600, name: 'Lunch Salad', date: formatDate(date2) },
+      { type: 'exercise', value: 45, name: 'Gym Session', date: formatDate(date2) },
+      { type: 'weight', value: 74.8, name: '', date: formatDate(date3) },
+      { type: 'food', value: 500, name: 'Grilled Chicken', date: formatDate(date3) },
+      { type: 'exercise', value: 60, name: 'Cycling', date: formatDate(date3) },
     ];
 
     const entriesRef = collection(db, `users/${user.uid}/entries`);
@@ -1375,7 +1403,7 @@ export default function BodyTracker() {
   };
 
   const handleLogout = async () => {
-    if (!FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!FIREBASE_ENABLED || typeof window === 'undefined' || !auth) return;
     try {
       await signOut(auth);
       window.location.href = '/login';
@@ -1428,6 +1456,7 @@ export default function BodyTracker() {
         type={modalType}
         setType={setModalType}
         editEntry={editingEntry}
+        isSaving={isSaving}
       />
 
       <AIInsightsModal
@@ -1454,6 +1483,22 @@ export default function BodyTracker() {
             className="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors text-sm"
           >
             Undo
+          </button>
+        </div>
+      )}
+
+      {/* Error Notification */}
+      {error && (
+        <div className="fixed bottom-20 left-4 right-4 bg-red-500 text-white px-4 py-3 rounded-2xl shadow-2xl z-[70] flex items-center justify-between animate-slide-up">
+          <div className="flex items-center gap-2">
+            <X size={16} />
+            <span className="text-sm font-medium">{error}</span>
+          </div>
+          <button
+            onClick={() => setError(null)}
+            className="bg-white/20 hover:bg-white/30 text-white font-semibold px-3 py-1.5 rounded-lg transition-colors text-sm"
+          >
+            Dismiss
           </button>
         </div>
       )}
