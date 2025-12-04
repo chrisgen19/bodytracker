@@ -48,9 +48,6 @@ import {
   onSnapshot,
   query,
   serverTimestamp,
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
   where,
   orderBy,
   getDocs,
@@ -113,12 +110,8 @@ if (typeof window !== 'undefined' && FIREBASE_ENABLED) {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
 
-    // Initialize Firestore with modern persistent cache (supports multiple tabs)
-    db = initializeFirestore(app, {
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager()
-      })
-    });
+    // Initialize Firestore with memory-only cache for more reliable syncing on mobile
+    db = getFirestore(app);
   } catch (error) {
     console.warn('Firebase initialization failed:', error);
   }
@@ -1339,10 +1332,6 @@ export default function BodyTracker() {
     const q = query(entriesRef);
 
     const unsubscribe = onSnapshot(q,
-      {
-        // Include metadata to track cache vs server
-        includeMetadataChanges: true
-      },
       (snapshot) => {
         // Check if data is from cache or server
         const source = snapshot.metadata.fromCache ? 'cache' : 'server';
@@ -1352,11 +1341,8 @@ export default function BodyTracker() {
         const changes = snapshot.docChanges();
         const changedDocs = changes.length;
 
-        // Process data from both cache and server
-        // Skip only if it's from cache AND has pending writes (optimistic update in progress)
-        const shouldUpdate = !snapshot.metadata.fromCache || !snapshot.metadata.hasPendingWrites;
-
-        if (shouldUpdate) {
+        // Always process data immediately - no cache filtering
+        if (true) {
           const fetchedEntries: Entry[] = snapshot.docs.map(doc => {
             const data = doc.data();
             return {
