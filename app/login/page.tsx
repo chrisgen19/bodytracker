@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword } from 'firebase/auth';
 import { Mail, Lock, Loader, LogIn, UserPlus } from 'lucide-react';
 import Link from 'next/link';
@@ -18,7 +18,8 @@ const firebaseConfig = {
 
 let auth: any;
 if (typeof window !== 'undefined') {
-  const app = initializeApp(firebaseConfig);
+  // Check if Firebase is already initialized
+  const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
   auth = getAuth(app);
 }
 
