@@ -78,6 +78,9 @@ interface ChartDataPoint {
   weight: number | null;
   calories: number;
   workout: number;
+  count?: number;
+  weightSum?: number;
+  weightCount?: number;
 }
 
 // --- Firebase Configuration & Initialization ---
@@ -474,6 +477,7 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
   const [activeMetrics, setActiveMetrics] = useState(['weight']);
   const [timeView, setTimeView] = useState('1M');
   const [viewDate, setViewDate] = useState(new Date());
+  const [weekPage, setWeekPage] = useState(0); // For 1W view pagination
 
   const toggleMetric = (metric: string) => {
     if (activeMetrics.includes(metric)) {
@@ -486,27 +490,26 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
   };
 
   const navigateTime = (direction: number) => {
-    const newDate = new Date(viewDate);
     if (timeView === '1W') {
-      newDate.setDate(newDate.getDate() + (direction * 7));
-    } else if (timeView === '1M') {
-      newDate.setMonth(newDate.getMonth() + direction);
-    } else if (timeView === '1Y') {
-      newDate.setFullYear(newDate.getFullYear() + direction);
+      // For 1W view, navigate by page (7 records at a time)
+      setWeekPage(prev => Math.max(0, prev + direction));
+    } else {
+      const newDate = new Date(viewDate);
+      if (timeView === '1M') {
+        newDate.setMonth(newDate.getMonth() + direction);
+      } else if (timeView === '1Y') {
+        newDate.setFullYear(newDate.getFullYear() + direction);
+      }
+      setViewDate(newDate);
     }
-    setViewDate(newDate);
   };
 
   const getDateRangeLabel = () => {
     if (timeView === 'ALL') return 'All Time';
 
     if (timeView === '1W') {
-      const start = new Date(viewDate);
-      const day = start.getDay();
-      start.setDate(start.getDate() - day);
-      const end = new Date(start);
-      end.setDate(end.getDate() + 6);
-      return `${start.toLocaleDateString(undefined, {month:'short', day:'numeric'})} - ${end.toLocaleDateString(undefined, {month:'short', day:'numeric'})}`;
+      if (weekPage === 0) return 'Last 7 Records';
+      return `${weekPage * 7 + 1}-${weekPage * 7 + 7} ago`;
     }
 
     if (timeView === '1M') {
@@ -521,56 +524,160 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
   const chartData = useMemo(() => {
     const dailyData: Record<string, ChartDataPoint> = {};
 
-    let startBound = new Date(0);
-    let endBound = new Date(8640000000000000);
+    // For 1W view, get 7 records based on pagination
+    if (timeView === '1W') {
+      // Group entries by date and aggregate
+      const entriesByDate: Record<string, { weight: number | null, calories: number, workout: number }> = {};
 
-    if (timeView !== 'ALL') {
-      const current = new Date(viewDate);
-      if (timeView === '1W') {
-        const day = current.getDay();
-        const start = new Date(current);
-        start.setDate(current.getDate() - day);
-        start.setHours(0,0,0,0);
+      entries.forEach(entry => {
+        const d = entry.date;
+        if (!entriesByDate[d]) {
+          entriesByDate[d] = { weight: null, calories: 0, workout: 0 };
+        }
+        if (entry.type === 'weight') entriesByDate[d].weight = entry.value;
+        if (entry.type === 'food') entriesByDate[d].calories += entry.value;
+        if (entry.type === 'exercise') entriesByDate[d].workout += entry.value;
+      });
 
-        const end = new Date(start);
-        end.setDate(end.getDate() + 6);
-        end.setHours(23,59,59,999);
+      // Get all dates sorted (newest first)
+      const allSortedDates = Object.keys(entriesByDate).sort((a, b) =>
+        new Date(b).getTime() - new Date(a).getTime()
+      );
 
-        startBound = start;
-        endBound = end;
-      } else if (timeView === '1M') {
-        startBound = new Date(current.getFullYear(), current.getMonth(), 1);
-        endBound = new Date(current.getFullYear(), current.getMonth() + 1, 0, 23, 59, 59);
-      } else if (timeView === '1Y') {
-        startBound = new Date(current.getFullYear(), 0, 1);
-        endBound = new Date(current.getFullYear(), 11, 31, 23, 59, 59);
+      // Calculate pagination: skip weekPage * 7 records, take 7
+      const startIdx = weekPage * 7;
+      const endIdx = startIdx + 7;
+      const sortedDates = allSortedDates.slice(startIdx, endIdx).reverse();
+
+      // Populate dailyData with paginated records
+      sortedDates.forEach(date => {
+        dailyData[date] = {
+          date,
+          displayDate: '',
+          weight: entriesByDate[date].weight,
+          calories: entriesByDate[date].calories,
+          workout: entriesByDate[date].workout
+        };
+      });
+    } else {
+      // For other views, use date ranges
+      let startBound = new Date(0);
+      let endBound = new Date(8640000000000000);
+
+      if (timeView !== 'ALL') {
+        const current = new Date(viewDate);
+
+        if (timeView === '1M') {
+          startBound = new Date(current.getFullYear(), current.getMonth(), 1);
+          endBound = new Date(current.getFullYear(), current.getMonth() + 1, 0, 23, 59, 59);
+
+          // For month view, create 4-5 weekly aggregates
+          const weeksInMonth = Math.ceil(new Date(current.getFullYear(), current.getMonth() + 1, 0).getDate() / 7);
+          for (let week = 0; week < weeksInMonth; week++) {
+            const weekKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-W${week + 1}`;
+            dailyData[weekKey] = { date: weekKey, displayDate: '', weight: null, calories: 0, workout: 0, count: 0 };
+          }
+        } else if (timeView === '1Y') {
+          startBound = new Date(current.getFullYear(), 0, 1);
+          endBound = new Date(current.getFullYear(), 11, 31, 23, 59, 59);
+
+          // For year view, create monthly aggregates
+          for (let month = 0; month < 12; month++) {
+            const monthDate = new Date(current.getFullYear(), month, 1);
+            const dateStr = monthDate.toISOString().split('T')[0];
+            dailyData[dateStr] = { date: dateStr, displayDate: '', weight: null, calories: 0, workout: 0 };
+          }
+        }
       }
+
+      // Populate with actual data for non-1W views
+      entries.forEach(entry => {
+        const entryDate = new Date(entry.date + 'T00:00:00');
+
+        if (timeView === 'ALL' || (entryDate >= startBound && entryDate <= endBound)) {
+          let d = entry.date;
+
+          // For month view, aggregate by week
+          if (timeView === '1M') {
+            const dayOfMonth = entryDate.getDate();
+            const weekNum = Math.ceil(dayOfMonth / 7);
+            d = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, '0')}-W${weekNum}`;
+          } else if (timeView === '1Y') {
+            // For year view, aggregate by month
+            const monthStart = new Date(entryDate.getFullYear(), entryDate.getMonth(), 1);
+            d = monthStart.toISOString().split('T')[0];
+          }
+
+          if (!dailyData[d]) {
+            dailyData[d] = { date: d, displayDate: '', weight: null, calories: 0, workout: 0, count: 0 };
+          }
+
+          // For month view weekly averages
+          if (timeView === '1M') {
+            const weekData = dailyData[d];
+            if (entry.type === 'weight') {
+              // Track all weights for averaging
+              weekData.weightSum = (weekData.weightSum || 0) + entry.value;
+              weekData.weightCount = (weekData.weightCount || 0) + 1;
+              weekData.weight = weekData.weightSum / weekData.weightCount;
+            }
+            if (entry.type === 'food') weekData.calories += entry.value;
+            if (entry.type === 'exercise') weekData.workout += entry.value;
+          } else {
+            // For other views, use latest weight
+            if (entry.type === 'weight') {
+              const existingWeight = dailyData[d].weight;
+              if (existingWeight === null || new Date(entry.date) >= new Date(dailyData[d].date)) {
+                dailyData[d].weight = entry.value;
+              }
+            }
+            if (entry.type === 'food') dailyData[d].calories += entry.value;
+            if (entry.type === 'exercise') dailyData[d].workout += entry.value;
+          }
+        }
+      });
     }
 
-    entries.forEach(entry => {
-      const entryDate = new Date(entry.date + 'T00:00:00');
-
-      if (entryDate >= startBound && entryDate <= endBound) {
-        const d = entry.date;
-        if (!dailyData[d]) {
-          dailyData[d] = { date: d, displayDate: '', weight: null, calories: 0, workout: 0 };
-        }
-
-        if (entry.type === 'weight') dailyData[d].weight = entry.value;
-        if (entry.type === 'food') dailyData[d].calories += entry.value;
-        if (entry.type === 'exercise') dailyData[d].workout += entry.value;
+    // Format display dates based on view
+    const getDisplayDate = (dateStr: string, hasData: boolean) => {
+      // For 1M weekly view, extract week number from format like "2024-12-W1"
+      if (timeView === '1M') {
+        if (!hasData) return '';
+        const weekMatch = dateStr.match(/W(\d+)$/);
+        return weekMatch ? `W${weekMatch[1]}` : '';
       }
-    });
+
+      const date = new Date(dateStr + 'T00:00:00');
+      if (timeView === '1W' || timeView === 'ALL') {
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      } else if (timeView === '1Y') {
+        return date.toLocaleDateString('en-US', { month: 'short' });
+      }
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    };
 
     return Object.values(dailyData)
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-      .map(d => ({
-        ...d,
-        displayDate: timeView === '1Y'
-          ? new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-          : new Date(d.date).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' })
-      }));
-  }, [entries, timeView, viewDate]);
+      .sort((a, b) => {
+        // Handle weekly format like "2024-12-W1"
+        const aIsWeek = a.date.includes('-W');
+        const bIsWeek = b.date.includes('-W');
+
+        if (aIsWeek && bIsWeek) {
+          // Both are weekly formats, compare them as strings
+          return a.date.localeCompare(b.date);
+        } else {
+          // Regular date comparison
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
+        }
+      })
+      .map(d => {
+        const hasData = d.weight !== null || d.calories > 0 || d.workout > 0;
+        return {
+          ...d,
+          displayDate: getDisplayDate(d.date, hasData)
+        };
+      });
+  }, [entries, timeView, viewDate, weekPage]);
 
   const weightEntries = entries.filter(e => e.type === 'weight').sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   const currentWeight = weightEntries.length > 0 ? weightEntries[weightEntries.length - 1].value : 0;
@@ -648,7 +755,10 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                 {['1W', '1M', '1Y', 'ALL'].map(t => (
                   <button
                     key={t}
-                    onClick={() => setTimeView(t)}
+                    onClick={() => {
+                      setTimeView(t);
+                      setWeekPage(0); // Reset to most recent records when switching views
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                       timeView === t
                         ? 'bg-white text-emerald-600 shadow-sm'
@@ -668,7 +778,15 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                   <span className="text-xs font-bold text-slate-700 w-24 text-center whitespace-nowrap">
                     {getDateRangeLabel()}
                   </span>
-                  <button onClick={() => navigateTime(1)} className="p-1 hover:bg-white rounded-md text-slate-500 hover:text-emerald-600 transition-colors">
+                  <button
+                    onClick={() => navigateTime(1)}
+                    disabled={timeView === '1W' && weekPage === 0}
+                    className={`p-1 hover:bg-white rounded-md transition-colors ${
+                      timeView === '1W' && weekPage === 0
+                        ? 'text-slate-300 cursor-not-allowed'
+                        : 'text-slate-500 hover:text-emerald-600'
+                    }`}
+                  >
                     <ChevronRight size={16} />
                   </button>
                 </div>
@@ -678,43 +796,43 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => toggleMetric('weight')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 border flex items-center gap-1.5 active:scale-95 ${
                 activeMetrics.includes('weight')
-                  ? 'bg-emerald-100 border-emerald-200 text-emerald-700'
-                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                  ? 'bg-emerald-100 border-emerald-200 text-emerald-700 shadow-sm'
+                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-emerald-200'
               }`}
             >
-              <div className={`w-2 h-2 rounded-full ${activeMetrics.includes('weight') ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+              <div className={`w-2 h-2 rounded-full transition-colors ${activeMetrics.includes('weight') ? 'bg-emerald-500' : 'bg-slate-300'}`} />
               Weight
             </button>
 
             <button
               onClick={() => toggleMetric('calories')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 border flex items-center gap-1.5 active:scale-95 ${
                 activeMetrics.includes('calories')
-                  ? 'bg-orange-100 border-orange-200 text-orange-700'
-                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                  ? 'bg-orange-100 border-orange-200 text-orange-700 shadow-sm'
+                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-orange-200'
               }`}
             >
-               <div className={`w-2 h-2 rounded-full ${activeMetrics.includes('calories') ? 'bg-orange-500' : 'bg-slate-300'}`} />
+               <div className={`w-2 h-2 rounded-full transition-colors ${activeMetrics.includes('calories') ? 'bg-orange-500' : 'bg-slate-300'}`} />
                Calories
             </button>
 
             <button
               onClick={() => toggleMetric('workout')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 border flex items-center gap-1.5 active:scale-95 ${
                 activeMetrics.includes('workout')
-                  ? 'bg-purple-100 border-purple-200 text-purple-700'
-                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                  ? 'bg-purple-100 border-purple-200 text-purple-700 shadow-sm'
+                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-purple-200'
               }`}
             >
-              <div className={`w-2 h-2 rounded-full ${activeMetrics.includes('workout') ? 'bg-purple-500' : 'bg-slate-300'}`} />
+              <div className={`w-2 h-2 rounded-full transition-colors ${activeMetrics.includes('workout') ? 'bg-purple-500' : 'bg-slate-300'}`} />
               Workout
             </button>
           </div>
         </div>
 
-        <div className="h-64 w-full">
+        <div className="h-64 w-full transition-opacity duration-300">
           {chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
@@ -725,7 +843,7 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                   tickLine={false}
                   tick={{fill: '#94a3b8', fontSize: 10}}
                   dy={10}
-                  interval="preserveStartEnd"
+                  interval={0}
                 />
 
                 <YAxis
@@ -751,7 +869,11 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                 <YAxis
                    yAxisId="workout"
                    orientation="right"
-                   hide={true}
+                   hide={!activeMetrics.includes('workout') && !activeMetrics.includes('calories')}
+                   axisLine={false}
+                   tickLine={false}
+                   tick={{fill: '#a855f7', fontSize: 10}}
+                   width={30}
                    domain={[0, 'dataMax + 20']}
                 />
 
@@ -770,6 +892,8 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                     dot={{fill: '#059669', strokeWidth: 2, r: 4, stroke: '#fff'}}
                     activeDot={{r: 6, strokeWidth: 0}}
                     name="Weight (kg)"
+                    animationDuration={500}
+                    animationEasing="ease-in-out"
                   />
                 )}
 
@@ -782,6 +906,8 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                     strokeWidth={2}
                     dot={false}
                     name="Calories"
+                    animationDuration={500}
+                    animationEasing="ease-in-out"
                   />
                 )}
 
@@ -794,6 +920,8 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                     strokeWidth={2}
                     dot={false}
                     name="Workout (min)"
+                    animationDuration={500}
+                    animationEasing="ease-in-out"
                   />
                 )}
 
