@@ -1413,15 +1413,6 @@ export default function BodyTracker() {
       </div>
 
       <main className="max-w-md mx-auto p-4 pt-2">
-        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 mb-4 flex items-start gap-3">
-          <Flame className="text-emerald-600 mt-0.5 flex-shrink-0" size={20} />
-          <div>
-            <p className="text-sm font-semibold text-emerald-900 mb-1">Secure Firebase Authentication</p>
-            <p className="text-xs text-emerald-700 leading-relaxed">
-              Your data is protected with Firebase email/password authentication and synced in real-time across all devices.
-            </p>
-          </div>
-        </div>
 
         {activeTab === 'dashboard' ? (
           <Dashboard entries={entries} onLoadDemo={generateMockData} onShowAI={() => setIsAIModalOpen(true)} />
