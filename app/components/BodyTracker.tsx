@@ -31,7 +31,7 @@ import {
   LogOut,
   Edit
 } from 'lucide-react';
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps } from 'firebase/app';
 import {
   getAuth,
   onAuthStateChanged,
@@ -48,9 +48,6 @@ import {
   onSnapshot,
   query,
   serverTimestamp,
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
   where,
   orderBy,
   getDocs,
@@ -78,6 +75,9 @@ interface ChartDataPoint {
   weight: number | null;
   calories: number;
   workout: number;
+  count?: number;
+  weightSum?: number;
+  weightCount?: number;
 }
 
 // --- Firebase Configuration & Initialization ---
@@ -96,27 +96,36 @@ const firebaseConfig = {
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "",
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "",
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || ""
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "",
+  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || ""
 };
 
 let app: any;
-let auth: Auth;
-let db: Firestore;
+let auth: Auth | null = null;
+let db: Firestore | null = null;
 const FIREBASE_ENABLED = isFirebaseConfigured();
 
 if (typeof window !== 'undefined' && FIREBASE_ENABLED) {
   try {
-    app = initializeApp(firebaseConfig);
-    auth = getAuth(app);
+    // Check if Firebase is already initialized
+    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+    console.log('🔥 Firebase app initialized:', app.name);
 
-    // Initialize Firestore with modern persistent cache (supports multiple tabs)
-    db = initializeFirestore(app, {
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager()
-      })
-    });
+    auth = getAuth(app);
+    console.log('🔐 Firebase Auth initialized:', !!auth);
+
+    // Initialize Firestore with memory-only cache for more reliable syncing on mobile
+    db = getFirestore(app);
+    console.log('💾 Firestore initialized:', !!db);
   } catch (error) {
-    console.warn('Firebase initialization failed:', error);
+    console.error('❌ Firebase initialization failed:', error);
+    // Try to recover by reinitializing
+    if (error instanceof Error && error.message.includes('duplicate-app')) {
+      app = getApps()[0];
+      auth = getAuth(app);
+      db = getFirestore(app);
+      console.log('✅ Recovered from duplicate-app error');
+    }
   }
 }
 
@@ -161,7 +170,7 @@ const BottomNav = ({ activeTab, setActiveTab, onAdd }: {
   setActiveTab: (tab: string) => void;
   onAdd: () => void;
 }) => (
-  <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-6 py-3 flex justify-between items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+  <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-6 py-3 flex justify-evenly items-center z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
     <button
       onClick={() => setActiveTab('dashboard')}
       className={`flex flex-col items-center gap-1 ${activeTab === 'dashboard' ? 'text-emerald-600' : 'text-slate-400'}`}
@@ -188,13 +197,14 @@ const BottomNav = ({ activeTab, setActiveTab, onAdd }: {
 );
 
 // 2. Add Entry Modal
-const AddModal = ({ isOpen, onClose, onSave, type, setType, editEntry }: {
+const AddModal = ({ isOpen, onClose, onSave, type, setType, editEntry, isSaving }: {
   isOpen: boolean;
   onClose: () => void;
   onSave: (data: Omit<Entry, 'id' | 'timestamp'>) => void;
   type: 'weight' | 'food' | 'exercise';
   setType: (type: 'weight' | 'food' | 'exercise') => void;
   editEntry?: Entry | null;
+  isSaving?: boolean;
 }) => {
   const [value, setValue] = useState('');
   const [name, setName] = useState('');
@@ -369,9 +379,11 @@ const AddModal = ({ isOpen, onClose, onSave, type, setType, editEntry }: {
 
           <button
             type="submit"
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-4 rounded-xl shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] mt-4"
+            disabled={isSaving}
+            className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-xl shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] mt-4 flex items-center justify-center gap-2"
           >
-            {editEntry ? 'Update Entry' : 'Save Entry'}
+            {isSaving && <Loader size={16} className="animate-spin" />}
+            {isSaving ? 'Saving...' : (editEntry ? 'Update Entry' : 'Save Entry')}
           </button>
         </form>
       </div>
@@ -468,8 +480,9 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
   onShowAI: () => void;
 }) => {
   const [activeMetrics, setActiveMetrics] = useState(['weight']);
-  const [timeView, setTimeView] = useState('1M');
+  const [timeView, setTimeView] = useState('1W');
   const [viewDate, setViewDate] = useState(new Date());
+  const [weekPage, setWeekPage] = useState(0); // For 1W view pagination
 
   const toggleMetric = (metric: string) => {
     if (activeMetrics.includes(metric)) {
@@ -482,27 +495,26 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
   };
 
   const navigateTime = (direction: number) => {
-    const newDate = new Date(viewDate);
     if (timeView === '1W') {
-      newDate.setDate(newDate.getDate() + (direction * 7));
-    } else if (timeView === '1M') {
-      newDate.setMonth(newDate.getMonth() + direction);
-    } else if (timeView === '1Y') {
-      newDate.setFullYear(newDate.getFullYear() + direction);
+      // For 1W view, navigate by page (7 records at a time)
+      setWeekPage(prev => Math.max(0, prev + direction));
+    } else {
+      const newDate = new Date(viewDate);
+      if (timeView === '1M') {
+        newDate.setMonth(newDate.getMonth() + direction);
+      } else if (timeView === '1Y') {
+        newDate.setFullYear(newDate.getFullYear() + direction);
+      }
+      setViewDate(newDate);
     }
-    setViewDate(newDate);
   };
 
   const getDateRangeLabel = () => {
     if (timeView === 'ALL') return 'All Time';
 
     if (timeView === '1W') {
-      const start = new Date(viewDate);
-      const day = start.getDay();
-      start.setDate(start.getDate() - day);
-      const end = new Date(start);
-      end.setDate(end.getDate() + 6);
-      return `${start.toLocaleDateString(undefined, {month:'short', day:'numeric'})} - ${end.toLocaleDateString(undefined, {month:'short', day:'numeric'})}`;
+      if (weekPage === 0) return 'Last 7 Records';
+      return `${weekPage * 7 + 1}-${weekPage * 7 + 7} ago`;
     }
 
     if (timeView === '1M') {
@@ -517,56 +529,160 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
   const chartData = useMemo(() => {
     const dailyData: Record<string, ChartDataPoint> = {};
 
-    let startBound = new Date(0);
-    let endBound = new Date(8640000000000000);
+    // For 1W view, get 7 records based on pagination
+    if (timeView === '1W') {
+      // Group entries by date and aggregate
+      const entriesByDate: Record<string, { weight: number | null, calories: number, workout: number }> = {};
 
-    if (timeView !== 'ALL') {
-      const current = new Date(viewDate);
-      if (timeView === '1W') {
-        const day = current.getDay();
-        const start = new Date(current);
-        start.setDate(current.getDate() - day);
-        start.setHours(0,0,0,0);
+      entries.forEach(entry => {
+        const d = entry.date;
+        if (!entriesByDate[d]) {
+          entriesByDate[d] = { weight: null, calories: 0, workout: 0 };
+        }
+        if (entry.type === 'weight') entriesByDate[d].weight = entry.value;
+        if (entry.type === 'food') entriesByDate[d].calories += entry.value;
+        if (entry.type === 'exercise') entriesByDate[d].workout += entry.value;
+      });
 
-        const end = new Date(start);
-        end.setDate(end.getDate() + 6);
-        end.setHours(23,59,59,999);
+      // Get all dates sorted (newest first)
+      const allSortedDates = Object.keys(entriesByDate).sort((a, b) =>
+        new Date(b).getTime() - new Date(a).getTime()
+      );
 
-        startBound = start;
-        endBound = end;
-      } else if (timeView === '1M') {
-        startBound = new Date(current.getFullYear(), current.getMonth(), 1);
-        endBound = new Date(current.getFullYear(), current.getMonth() + 1, 0, 23, 59, 59);
-      } else if (timeView === '1Y') {
-        startBound = new Date(current.getFullYear(), 0, 1);
-        endBound = new Date(current.getFullYear(), 11, 31, 23, 59, 59);
+      // Calculate pagination: skip weekPage * 7 records, take 7
+      const startIdx = weekPage * 7;
+      const endIdx = startIdx + 7;
+      const sortedDates = allSortedDates.slice(startIdx, endIdx).reverse();
+
+      // Populate dailyData with paginated records
+      sortedDates.forEach(date => {
+        dailyData[date] = {
+          date,
+          displayDate: '',
+          weight: entriesByDate[date].weight,
+          calories: entriesByDate[date].calories,
+          workout: entriesByDate[date].workout
+        };
+      });
+    } else {
+      // For other views, use date ranges
+      let startBound = new Date(0);
+      let endBound = new Date(8640000000000000);
+
+      if (timeView !== 'ALL') {
+        const current = new Date(viewDate);
+
+        if (timeView === '1M') {
+          startBound = new Date(current.getFullYear(), current.getMonth(), 1);
+          endBound = new Date(current.getFullYear(), current.getMonth() + 1, 0, 23, 59, 59);
+
+          // For month view, create 4-5 weekly aggregates
+          const weeksInMonth = Math.ceil(new Date(current.getFullYear(), current.getMonth() + 1, 0).getDate() / 7);
+          for (let week = 0; week < weeksInMonth; week++) {
+            const weekKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-W${week + 1}`;
+            dailyData[weekKey] = { date: weekKey, displayDate: '', weight: null, calories: 0, workout: 0, count: 0 };
+          }
+        } else if (timeView === '1Y') {
+          startBound = new Date(current.getFullYear(), 0, 1);
+          endBound = new Date(current.getFullYear(), 11, 31, 23, 59, 59);
+
+          // For year view, create monthly aggregates
+          for (let month = 0; month < 12; month++) {
+            const monthDate = new Date(current.getFullYear(), month, 1);
+            const dateStr = monthDate.toISOString().split('T')[0];
+            dailyData[dateStr] = { date: dateStr, displayDate: '', weight: null, calories: 0, workout: 0 };
+          }
+        }
       }
+
+      // Populate with actual data for non-1W views
+      entries.forEach(entry => {
+        const entryDate = new Date(entry.date + 'T00:00:00');
+
+        if (timeView === 'ALL' || (entryDate >= startBound && entryDate <= endBound)) {
+          let d = entry.date;
+
+          // For month view, aggregate by week
+          if (timeView === '1M') {
+            const dayOfMonth = entryDate.getDate();
+            const weekNum = Math.ceil(dayOfMonth / 7);
+            d = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, '0')}-W${weekNum}`;
+          } else if (timeView === '1Y') {
+            // For year view, aggregate by month
+            const monthStart = new Date(entryDate.getFullYear(), entryDate.getMonth(), 1);
+            d = monthStart.toISOString().split('T')[0];
+          }
+
+          if (!dailyData[d]) {
+            dailyData[d] = { date: d, displayDate: '', weight: null, calories: 0, workout: 0, count: 0 };
+          }
+
+          // For month view weekly averages
+          if (timeView === '1M') {
+            const weekData = dailyData[d];
+            if (entry.type === 'weight') {
+              // Track all weights for averaging
+              weekData.weightSum = (weekData.weightSum || 0) + entry.value;
+              weekData.weightCount = (weekData.weightCount || 0) + 1;
+              weekData.weight = weekData.weightSum / weekData.weightCount;
+            }
+            if (entry.type === 'food') weekData.calories += entry.value;
+            if (entry.type === 'exercise') weekData.workout += entry.value;
+          } else {
+            // For other views, use latest weight
+            if (entry.type === 'weight') {
+              const existingWeight = dailyData[d].weight;
+              if (existingWeight === null || new Date(entry.date) >= new Date(dailyData[d].date)) {
+                dailyData[d].weight = entry.value;
+              }
+            }
+            if (entry.type === 'food') dailyData[d].calories += entry.value;
+            if (entry.type === 'exercise') dailyData[d].workout += entry.value;
+          }
+        }
+      });
     }
 
-    entries.forEach(entry => {
-      const entryDate = new Date(entry.date + 'T00:00:00');
-
-      if (entryDate >= startBound && entryDate <= endBound) {
-        const d = entry.date;
-        if (!dailyData[d]) {
-          dailyData[d] = { date: d, displayDate: '', weight: null, calories: 0, workout: 0 };
-        }
-
-        if (entry.type === 'weight') dailyData[d].weight = entry.value;
-        if (entry.type === 'food') dailyData[d].calories += entry.value;
-        if (entry.type === 'exercise') dailyData[d].workout += entry.value;
+    // Format display dates based on view
+    const getDisplayDate = (dateStr: string, hasData: boolean) => {
+      // For 1M weekly view, extract week number from format like "2024-12-W1"
+      if (timeView === '1M') {
+        if (!hasData) return '';
+        const weekMatch = dateStr.match(/W(\d+)$/);
+        return weekMatch ? `W${weekMatch[1]}` : '';
       }
-    });
+
+      const date = new Date(dateStr + 'T00:00:00');
+      if (timeView === '1W' || timeView === 'ALL') {
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      } else if (timeView === '1Y') {
+        return date.toLocaleDateString('en-US', { month: 'short' });
+      }
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    };
 
     return Object.values(dailyData)
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-      .map(d => ({
-        ...d,
-        displayDate: timeView === '1Y'
-          ? new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-          : new Date(d.date).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' })
-      }));
-  }, [entries, timeView, viewDate]);
+      .sort((a, b) => {
+        // Handle weekly format like "2024-12-W1"
+        const aIsWeek = a.date.includes('-W');
+        const bIsWeek = b.date.includes('-W');
+
+        if (aIsWeek && bIsWeek) {
+          // Both are weekly formats, compare them as strings
+          return a.date.localeCompare(b.date);
+        } else {
+          // Regular date comparison
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
+        }
+      })
+      .map(d => {
+        const hasData = d.weight !== null || d.calories > 0 || d.workout > 0;
+        return {
+          ...d,
+          displayDate: getDisplayDate(d.date, hasData)
+        };
+      });
+  }, [entries, timeView, viewDate, weekPage]);
 
   const weightEntries = entries.filter(e => e.type === 'weight').sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   const currentWeight = weightEntries.length > 0 ? weightEntries[weightEntries.length - 1].value : 0;
@@ -644,7 +760,10 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                 {['1W', '1M', '1Y', 'ALL'].map(t => (
                   <button
                     key={t}
-                    onClick={() => setTimeView(t)}
+                    onClick={() => {
+                      setTimeView(t);
+                      setWeekPage(0); // Reset to most recent records when switching views
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                       timeView === t
                         ? 'bg-white text-emerald-600 shadow-sm'
@@ -664,7 +783,15 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                   <span className="text-xs font-bold text-slate-700 w-24 text-center whitespace-nowrap">
                     {getDateRangeLabel()}
                   </span>
-                  <button onClick={() => navigateTime(1)} className="p-1 hover:bg-white rounded-md text-slate-500 hover:text-emerald-600 transition-colors">
+                  <button
+                    onClick={() => navigateTime(1)}
+                    disabled={timeView === '1W' && weekPage === 0}
+                    className={`p-1 hover:bg-white rounded-md transition-colors ${
+                      timeView === '1W' && weekPage === 0
+                        ? 'text-slate-300 cursor-not-allowed'
+                        : 'text-slate-500 hover:text-emerald-600'
+                    }`}
+                  >
                     <ChevronRight size={16} />
                   </button>
                 </div>
@@ -674,43 +801,43 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => toggleMetric('weight')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 border flex items-center gap-1.5 active:scale-95 ${
                 activeMetrics.includes('weight')
-                  ? 'bg-emerald-100 border-emerald-200 text-emerald-700'
-                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                  ? 'bg-emerald-100 border-emerald-200 text-emerald-700 shadow-sm'
+                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-emerald-200'
               }`}
             >
-              <div className={`w-2 h-2 rounded-full ${activeMetrics.includes('weight') ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+              <div className={`w-2 h-2 rounded-full transition-colors ${activeMetrics.includes('weight') ? 'bg-emerald-500' : 'bg-slate-300'}`} />
               Weight
             </button>
 
             <button
               onClick={() => toggleMetric('calories')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 border flex items-center gap-1.5 active:scale-95 ${
                 activeMetrics.includes('calories')
-                  ? 'bg-orange-100 border-orange-200 text-orange-700'
-                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                  ? 'bg-orange-100 border-orange-200 text-orange-700 shadow-sm'
+                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-orange-200'
               }`}
             >
-               <div className={`w-2 h-2 rounded-full ${activeMetrics.includes('calories') ? 'bg-orange-500' : 'bg-slate-300'}`} />
+               <div className={`w-2 h-2 rounded-full transition-colors ${activeMetrics.includes('calories') ? 'bg-orange-500' : 'bg-slate-300'}`} />
                Calories
             </button>
 
             <button
               onClick={() => toggleMetric('workout')}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 border flex items-center gap-1.5 active:scale-95 ${
                 activeMetrics.includes('workout')
-                  ? 'bg-purple-100 border-purple-200 text-purple-700'
-                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                  ? 'bg-purple-100 border-purple-200 text-purple-700 shadow-sm'
+                  : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-purple-200'
               }`}
             >
-              <div className={`w-2 h-2 rounded-full ${activeMetrics.includes('workout') ? 'bg-purple-500' : 'bg-slate-300'}`} />
+              <div className={`w-2 h-2 rounded-full transition-colors ${activeMetrics.includes('workout') ? 'bg-purple-500' : 'bg-slate-300'}`} />
               Workout
             </button>
           </div>
         </div>
 
-        <div className="h-64 w-full">
+        <div className="h-64 w-full transition-opacity duration-300 select-none">
           {chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
@@ -721,7 +848,7 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                   tickLine={false}
                   tick={{fill: '#94a3b8', fontSize: 10}}
                   dy={10}
-                  interval="preserveStartEnd"
+                  interval={0}
                 />
 
                 <YAxis
@@ -747,7 +874,11 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                 <YAxis
                    yAxisId="workout"
                    orientation="right"
-                   hide={true}
+                   hide={!activeMetrics.includes('workout') && !activeMetrics.includes('calories')}
+                   axisLine={false}
+                   tickLine={false}
+                   tick={{fill: '#a855f7', fontSize: 10}}
+                   width={30}
                    domain={[0, 'dataMax + 20']}
                 />
 
@@ -766,6 +897,8 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                     dot={{fill: '#059669', strokeWidth: 2, r: 4, stroke: '#fff'}}
                     activeDot={{r: 6, strokeWidth: 0}}
                     name="Weight (kg)"
+                    animationDuration={500}
+                    animationEasing="ease-in-out"
                   />
                 )}
 
@@ -778,6 +911,8 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                     strokeWidth={2}
                     dot={false}
                     name="Calories"
+                    animationDuration={500}
+                    animationEasing="ease-in-out"
                   />
                 )}
 
@@ -790,6 +925,8 @@ const Dashboard = ({ entries, onLoadDemo, onShowAI }: {
                     strokeWidth={2}
                     dot={false}
                     name="Workout (min)"
+                    animationDuration={500}
+                    animationEasing="ease-in-out"
                   />
                 )}
 
@@ -1162,6 +1299,8 @@ export default function BodyTracker() {
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [deletedEntry, setDeletedEntry] = useState<{entry: Entry, timeoutId: NodeJS.Timeout} | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -1174,7 +1313,7 @@ export default function BodyTracker() {
 
   // Firebase authentication and data loading
   useEffect(() => {
-    if (!FIREBASE_ENABLED || typeof window === 'undefined') {
+    if (!FIREBASE_ENABLED || typeof window === 'undefined' || !auth) {
       setLoading(false);
       return;
     }
@@ -1195,27 +1334,66 @@ export default function BodyTracker() {
 
   // Real-time listener for entries from Firebase with optimized caching
   useEffect(() => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) {
+      console.log('❌ Firebase not ready:', { user: !!user, FIREBASE_ENABLED, window: typeof window !== 'undefined', db: !!db });
+      return;
+    }
 
+    console.log('✅ Setting up Firebase listener for user:', user.uid);
     const entriesRef = collection(db, `users/${user.uid}/entries`);
     const q = query(entriesRef);
 
+    // Force initial fetch from server on login
+    let isFirstLoad = true;
+    getDocs(q).then((querySnapshot) => {
+      console.log('🚀 Initial server fetch completed:', querySnapshot.docs.length, 'docs');
+      const fetchedEntries: Entry[] = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          type: data.type,
+          value: data.value,
+          name: data.name || '',
+          details: data.details || '',
+          date: data.date,
+          timestamp: data.timestamp
+        };
+      });
+
+      fetchedEntries.sort((a, b) => {
+        const dateCompare = b.date.localeCompare(a.date);
+        if (dateCompare !== 0) return dateCompare;
+        const aTime = a.timestamp?.toMillis() || 0;
+        const bTime = b.timestamp?.toMillis() || 0;
+        return bTime - aTime;
+      });
+
+      setEntries(fetchedEntries);
+      setLoading(false);
+      isFirstLoad = false;
+    }).catch((error) => {
+      console.error('❌ Initial fetch failed:', error);
+      setLoading(false);
+    });
+
     const unsubscribe = onSnapshot(q,
-      {
-        // Include metadata to track cache vs server
-        includeMetadataChanges: true
-      },
       (snapshot) => {
+        // Skip the first snapshot if we already loaded from server
+        if (isFirstLoad) {
+          isFirstLoad = false;
+          return;
+        }
+
         // Check if data is from cache or server
         const source = snapshot.metadata.fromCache ? 'cache' : 'server';
+        console.log(`📡 Snapshot received from ${source}, docs: ${snapshot.docs.length}`);
 
         // Track what changed (for bandwidth monitoring)
         const changes = snapshot.docChanges();
         const changedDocs = changes.length;
 
-        // Process data from both cache and server
-        // Skip only intermediate cache updates (not the initial cache load)
-        if (!snapshot.metadata.fromCache || !snapshot.metadata.hasPendingWrites || entries.length === 0) {
+        // Always process data immediately - no cache filtering
+        if (true) {
           const fetchedEntries: Entry[] = snapshot.docs.map(doc => {
             const data = doc.data();
             return {
@@ -1261,7 +1439,10 @@ export default function BodyTracker() {
   }, [user]);
 
   const handleAddEntry = async (entryData: Omit<Entry, 'id' | 'timestamp'>) => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
+
+    setIsSaving(true);
+    setError(null);
 
     try {
       if (editingEntry) {
@@ -1282,15 +1463,20 @@ export default function BodyTracker() {
       }
     } catch (error) {
       console.error("Error saving entry:", error);
+      setError("Failed to save entry. Please check your connection and try again.");
+    } finally {
+      setIsSaving(false);
     }
   };
 
   const handleDeleteEntry = async (id: string) => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
 
     // Find the entry to delete
     const entryToDelete = entries.find(e => e.id === id);
     if (!entryToDelete) return;
+
+    setError(null);
 
     try {
       // Delete from Firebase
@@ -1305,14 +1491,16 @@ export default function BodyTracker() {
       setDeletedEntry({ entry: entryToDelete, timeoutId });
     } catch (error) {
       console.error("Error deleting entry:", error);
+      setError("Failed to delete entry. Please try again.");
     }
   };
 
   const handleUndoDelete = async () => {
-    if (!deletedEntry || !user || !FIREBASE_ENABLED) return;
+    if (!deletedEntry || !user || !FIREBASE_ENABLED || !db) return;
 
     // Clear the timeout
     clearTimeout(deletedEntry.timeoutId);
+    setError(null);
 
     try {
       // Re-add the entry to Firebase
@@ -1329,6 +1517,8 @@ export default function BodyTracker() {
       setDeletedEntry(null);
     } catch (error) {
       console.error("Error restoring entry:", error);
+      setError("Failed to restore entry. Please try again.");
+      setDeletedEntry(null);
     }
   };
 
@@ -1339,18 +1529,28 @@ export default function BodyTracker() {
   };
 
   const generateMockData = async () => {
-    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!user || !FIREBASE_ENABLED || typeof window === 'undefined' || !db) return;
+
+    // Generate relative dates (today, 5 days ago, 10 days ago)
+    const today = new Date();
+    const date1 = new Date(today);
+    date1.setDate(today.getDate() - 10);
+    const date2 = new Date(today);
+    date2.setDate(today.getDate() - 5);
+    const date3 = today;
+
+    const formatDate = (date: Date) => date.toISOString().split('T')[0];
 
     const mockEntries = [
-      { type: 'weight', value: 75.5, name: '', date: '2024-11-15' },
-      { type: 'food', value: 450, name: 'Breakfast Bowl', date: '2024-11-15' },
-      { type: 'exercise', value: 30, name: 'Morning Run', date: '2024-11-15' },
-      { type: 'weight', value: 75.2, name: '', date: '2024-11-20' },
-      { type: 'food', value: 600, name: 'Lunch Salad', date: '2024-11-20' },
-      { type: 'exercise', value: 45, name: 'Gym Session', date: '2024-11-20' },
-      { type: 'weight', value: 74.8, name: '', date: '2024-11-25' },
-      { type: 'food', value: 500, name: 'Grilled Chicken', date: '2024-11-25' },
-      { type: 'exercise', value: 60, name: 'Cycling', date: '2024-11-25' },
+      { type: 'weight', value: 75.5, name: '', date: formatDate(date1) },
+      { type: 'food', value: 450, name: 'Breakfast Bowl', date: formatDate(date1) },
+      { type: 'exercise', value: 30, name: 'Morning Run', date: formatDate(date1) },
+      { type: 'weight', value: 75.2, name: '', date: formatDate(date2) },
+      { type: 'food', value: 600, name: 'Lunch Salad', date: formatDate(date2) },
+      { type: 'exercise', value: 45, name: 'Gym Session', date: formatDate(date2) },
+      { type: 'weight', value: 74.8, name: '', date: formatDate(date3) },
+      { type: 'food', value: 500, name: 'Grilled Chicken', date: formatDate(date3) },
+      { type: 'exercise', value: 60, name: 'Cycling', date: formatDate(date3) },
     ];
 
     const entriesRef = collection(db, `users/${user.uid}/entries`);
@@ -1375,7 +1575,7 @@ export default function BodyTracker() {
   };
 
   const handleLogout = async () => {
-    if (!FIREBASE_ENABLED || typeof window === 'undefined') return;
+    if (!FIREBASE_ENABLED || typeof window === 'undefined' || !auth) return;
     try {
       await signOut(auth);
       window.location.href = '/login';
@@ -1413,15 +1613,6 @@ export default function BodyTracker() {
       </div>
 
       <main className="max-w-md mx-auto p-4 pt-2">
-        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 mb-4 flex items-start gap-3">
-          <Flame className="text-emerald-600 mt-0.5 flex-shrink-0" size={20} />
-          <div>
-            <p className="text-sm font-semibold text-emerald-900 mb-1">Secure Firebase Authentication</p>
-            <p className="text-xs text-emerald-700 leading-relaxed">
-              Your data is protected with Firebase email/password authentication and synced in real-time across all devices.
-            </p>
-          </div>
-        </div>
 
         {activeTab === 'dashboard' ? (
           <Dashboard entries={entries} onLoadDemo={generateMockData} onShowAI={() => setIsAIModalOpen(true)} />
@@ -1437,6 +1628,7 @@ export default function BodyTracker() {
         type={modalType}
         setType={setModalType}
         editEntry={editingEntry}
+        isSaving={isSaving}
       />
 
       <AIInsightsModal
@@ -1463,6 +1655,22 @@ export default function BodyTracker() {
             className="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors text-sm"
           >
             Undo
+          </button>
+        </div>
+      )}
+
+      {/* Error Notification */}
+      {error && (
+        <div className="fixed bottom-20 left-4 right-4 bg-red-500 text-white px-4 py-3 rounded-2xl shadow-2xl z-[70] flex items-center justify-between animate-slide-up">
+          <div className="flex items-center gap-2">
+            <X size={16} />
+            <span className="text-sm font-medium">{error}</span>
+          </div>
+          <button
+            onClick={() => setError(null)}
+            className="bg-white/20 hover:bg-white/30 text-white font-semibold px-3 py-1.5 rounded-lg transition-colors text-sm"
+          >
+            Dismiss
           </button>
         </div>
       )}
